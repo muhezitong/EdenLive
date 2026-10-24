@@ -49,6 +49,7 @@
     <script>
       // 进入页面即开局：选定游戏并 restart，让服务端从这一章的首帧开始生成。
       // 浏览器要求用户手势才能稳定接收键盘焦点，所以先显示一层“点击进入”。
+      // 点下时同时请求指针锁定，把鼠标相对移动发给游戏转视角（不点这里就按方向键）。
       (() => {
         const slug = window.__PLAY_GAME__ || 'three-body-137';
         const start = document.getElementById('start');
@@ -64,6 +65,12 @@
           start.hidden = true;
           video.focus();
           if (!started) { started = true; go(); }
+          lockCursorToWindow = true;
+          lockPointerToWindow();
+        });
+        // 播放页只当玩家，不查参数：锁定的光标在 Esc 解锁后，点画面就重新锁定。
+        video.addEventListener('pointerdown', () => {
+          if (lockCursorToWindow) lockPointerToWindow();
         });
         // 会话里没有这个游戏时（例如服务端刚重启、扩展还没注册），稍后重试一次。
         setTimeout(() => { if (!started) return; fetch('/ext/game2v/games').then((r) => r.json()).then((d) => { if (d.current !== slug) go(); }).catch(() => {}); }, 5000);

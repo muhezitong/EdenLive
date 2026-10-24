@@ -149,6 +149,45 @@ def test_hud_envelope_forwards_state_verbatim():
     assert envelope('tracer', 1, None)['state'] is None
 
 
+def test_game_input_payloads_turn_mouse_moves_into_deltas():
+    """鼠标移动转成相对增量；按键与 HUD 点击不变；按钮和滚轮不转发。"""
+    from numpy import uint64
+
+    from flashdreams.runtime_v2.user_input_event import (
+        ClientActionUserInputEvent,
+        KeyboardInputState,
+        KeyboardUserInputEvent,
+        MouseUserInputEvent,
+    )
+    from flashdreams.runtime_v2.user_input_events import UserInputEvents
+
+    payloads = _game_input_payloads(
+        UserInputEvents(
+            [
+                KeyboardUserInputEvent(
+                    timestamp=uint64(1),
+                    key='W',
+                    state=KeyboardInputState.PRESSED,
+                ),
+                MouseUserInputEvent(timestamp=uint64(2), action='move', x=0.5, y=0.5),
+                MouseUserInputEvent(timestamp=uint64(3), action='move', x=0.6, y=0.4),
+                MouseUserInputEvent(timestamp=uint64(4), action='button', x=0.6, y=0.4, button=0, pressed=True),
+                ClientActionUserInputEvent(
+                    timestamp=uint64(5),
+                    action='undo',
+                    channel='game_ui',
+                ),
+            ]
+        )
+    )
+    assert payloads == [
+        {'action': 'w', 'phase': 'down'},
+        # 第一个 move 没有前序位置，只建立基准，不产生增量。
+        {'action': 'mouse-move', 'phase': 'move', 'dx': 0.05, 'dy': -0.05},
+        {'action': 'undo', 'phase': 'down'},
+        {'action': 'undo', 'phase': 'up'},
+    ]
+
 def test_game_input_payloads_pulse_overlay_actions():
     from numpy import uint64
 

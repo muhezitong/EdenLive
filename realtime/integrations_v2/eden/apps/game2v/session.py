@@ -41,6 +41,7 @@ from flashdreams.runtime_v2.user_input_event import (
     ClientActionUserInputEvent,
     KeyboardInputState,
     KeyboardUserInputEvent,
+    MouseUserInputEvent,
 )
 from flashdreams.runtime_v2.video_tensor import VideoTensorLayout
 
@@ -982,15 +983,27 @@ class Game2VSession(ISession):
         super().close()
 
 
+MOUSE_MOVE_SENSITIVITY = 0.5
+"""Browser pointer-lock movement is amplified: one full swipe across the video
+(1.0 in video-width units) turns the camera half the screen width."""
+
+
 def _game_input_payloads(events: UserInputEvents) -> list[dict[str, str]]:
-    """Turn keyboard edges and HUD clicks into Chromium ``{action, phase}`` dicts.
+    """Turn keyboard edges, mouse moves and HUD clicks into Chromium payloads.
 
     Overlay actions are click pulses rather than held keys, so each client action
     is a down immediately followed by an up. Reset/close stay with the model
     reader; they are not game keys. The runtime does not interpret the action
     name; Chromium's ``handleUiAction`` owns that vocabulary.
+
+    Mouse move events carry a position, not a delta, so the delta comes from
+    comparing with the previous event. Only moves are forwarded; buttons and
+    the wheel have no game use here. Deltas are scaled down: generated frames
+    trail input by seconds, so a slow, steady turn reads better than a fast
+    flick.
     """
     payloads: list[dict[str, str]] = []
+    last_mouse: tuple[float, float] | None = None
     for event in events.get_events():
         if isinstance(event, KeyboardUserInputEvent):
             payloads.append(
@@ -1001,6 +1014,20 @@ def _game_input_payloads(events: UserInputEvents) -> list[dict[str, str]]:
                     ),
                 }
             )
+        elif isinstance(event, MouseUserInputEvent) and event.action == "move":
+            x, y = event.x, event.y
+            if last_mouse is not None:
+                dx, dy = x - last_mouse[0], y - last_mouse[1]
+                if dx or dy:
+                    payloads.append(
+                        {
+                            "action": "mouse-move",
+                            "phase": "move",
+                            "dx": round(dx * MOUSE_MOVE_SENSITIVITY, 4),
+                            "dy": round(dy * MOUSE_MOVE_SENSITIVITY, 4),
+                        }
+                    )
+            last_mouse = (x, y)
         elif isinstance(event, ClientActionUserInputEvent):
             if event.channel in ("", GAME_UI_ACTION_CHANNEL) and event.action:
                 payloads.append({"action": event.action, "phase": "down"})

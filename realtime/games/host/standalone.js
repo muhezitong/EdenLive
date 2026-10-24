@@ -77,8 +77,23 @@
     }));
   }
 
+  // EdenLive's server turns the browser's mouse move events into
+  // {action: 'mouse-move', phase: 'move', dx, dy} payloads; dispatch them as
+  // mousemove events so games that read movementX/Y can turn the camera.
+  // dx/dy are fractions of the viewport; scaled to pixels so movementX/Y
+  // keep their usual magnitude.
+  function mouseMove(dx, dy) {
+    const target = canvas || document.body;
+    target.dispatchEvent(new MouseEvent('mousemove', {
+      movementX: Math.round((+dx || 0) * window.innerWidth),
+      movementY: Math.round((+dy || 0) * window.innerHeight),
+      bubbles: true, cancelable: true,
+    }));
+  }
+
   function dispatchEvents(events) {
-    for (const {action, phase} of events || []) {
+    for (const {action, phase, dx, dy} of events || []) {
+      if (action === 'mouse-move') { mouseMove(dx, dy); continue; }
       // Overlay buttons send restart as a client action; the game only knows
       // its own restart key, so press that instead.
       if (action === 'restart' || action === 'reset') {

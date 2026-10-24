@@ -1,0 +1,73 @@
+<!doctype html>
+<!--
+  Full-screen play page (three-body-game issue #5). Same WebRTC client as
+  index.html (/app.js), but only the generated video and the game's HUD overlay
+  are shown; the prompt, event and proxy-render panels stay in the DOM, hidden,
+  because app.js writes to them. The developer console remains at /console.
+  Served at / when FLASHDREAMS_PLAY_PAGE=1; window.__PLAY_GAME__ names the game
+  started on load.
+-->
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>三体 · EdenLive</title>
+    <style>
+      html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #000; color: #ece6d4;
+        font: 16px "Noto Serif SC", "Songti SC", "PingFang SC", serif; }
+      .stage { position: fixed; inset: 0; }
+      .model-stage { position: absolute; inset: 0; }
+      #video { display: block; width: 100%; height: 100%; object-fit: contain; background: #000; outline: none; }
+      #game-overlay { position: absolute; pointer-events: none; overflow: hidden; }
+      #game-overlay button, #game-overlay [data-game-action] { pointer-events: auto; }
+      .hidden-panels { display: none; }
+      #status { position: fixed; inset: 0; display: grid; place-items: center; box-sizing: border-box; padding: 2rem;
+        text-align: center; white-space: pre-wrap; pointer-events: none; letter-spacing: .15em; color: #c9bfa4; }
+      #status[hidden] { display: none; }
+      #status.error { color: #ff8a8a; letter-spacing: 0; }
+      #start { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0, 0, 0, .55); cursor: pointer; }
+      #start[hidden] { display: none; }
+      #start div { text-align: center; }
+      #start h1 { margin: 0 0 .6rem; font-size: 3rem; font-weight: 900; letter-spacing: .4em; }
+      #start p { margin: 0; opacity: .75; letter-spacing: .2em; }
+      #console-link { position: fixed; right: .75rem; bottom: .5rem; font-size: .75rem; color: #8a826f; text-decoration: none; opacity: .5; }
+      #console-link:hover { opacity: 1; }
+    </style>
+  </head>
+  <body>
+    <main class="stage">
+      <div class="model-stage"><video id="video" autoplay muted playsinline></video><div id="game-overlay" hidden></div></div>
+    </main>
+    <div class="hidden-panels" aria-hidden="true">
+      <div id="prompt"></div><div id="events"></div><video id="game-video" autoplay muted playsinline></video>
+    </div>
+    <div id="status" role="status" aria-live="polite">正在连接……</div>
+    <div id="start" hidden><div><h1>三体</h1><p>点击进入　·　WASD 移动　方向键 视角　E 交互　Q 脱水　空格 对白</p></div></div>
+    <a id="console-link" href="/console">控制台</a>
+    <script>window.__NO_EXTENSIONS__ = true;</script>
+    <script src="/app.js"></script>
+    <script>
+      // 进入页面即开局：选定游戏并 restart，让服务端从这一章的首帧开始生成。
+      // 浏览器要求用户手势才能稳定接收键盘焦点，所以先显示一层“点击进入”。
+      (() => {
+        const slug = window.__PLAY_GAME__ || 'three-body-137';
+        const start = document.getElementById('start');
+        const video = document.getElementById('video');
+        const go = () =>
+          fetch('/ext/game2v/switch', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ slug, restart: true }),
+          }).catch((error) => console.warn('Unable to start the game.', error));
+        let started = false;
+        start.hidden = false;
+        start.addEventListener('click', () => {
+          start.hidden = true;
+          video.focus();
+          if (!started) { started = true; go(); }
+        });
+        // 会话里没有这个游戏时（例如服务端刚重启、扩展还没注册），稍后重试一次。
+        setTimeout(() => { if (!started) return; fetch('/ext/game2v/games').then((r) => r.json()).then((d) => { if (d.current !== slug) go(); }).catch(() => {}); }, 5000);
+      })();
+    </script>
+  </body>
+</html>

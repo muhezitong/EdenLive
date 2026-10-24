@@ -64,6 +64,11 @@ from flashdreams.runtime_v2.video_tensor import VideoTensorLayout
 
 _WEB_RESOURCES = files("flashdreams.runtime_v2.serving").joinpath("web")
 _BROWSER_PAGE = _WEB_RESOURCES.joinpath("index.html").read_text(encoding="utf-8")
+_PLAY_PAGE = _WEB_RESOURCES.joinpath("play.html").read_text(encoding="utf-8")
+_PLAY_PAGE_ENV = "FLASHDREAMS_PLAY_PAGE"
+"""Set to ``1`` to serve the full-screen play page at ``/`` and the console at ``/console``."""
+_PLAY_GAME_ENV = "FLASHDREAMS_PLAY_GAME"
+"""Game slug the play page starts on load."""
 _BROWSER_SCRIPT = _WEB_RESOURCES.joinpath("app.js").read_text(encoding="utf-8")
 
 _GAME_OVERLAY_SLUG = re.compile(r"^[a-z0-9-]+$")
@@ -1025,7 +1030,9 @@ class WebRTCServer:
         """Create and bind the standalone aiohttp application."""
         self._offer_lock = asyncio.Lock()
         app = web.Application()
-        app.router.add_get("/", self._serve_browser)
+        app.router.add_get("/", self._serve_root)
+        app.router.add_get("/console", self._serve_browser)
+        app.router.add_get("/play", self._serve_play)
         app.router.add_get("/app.js", self._serve_browser_script)
         app.router.add_get("/games/{slug}/hud/{filename}", self._serve_game_overlay)
         app.router.add_get("/vendor/{filename}", self._serve_game_vendor)
@@ -1054,9 +1061,26 @@ class WebRTCServer:
             raise
         self._runner = runner
 
+    async def _serve_root(self, request: web.Request) -> web.Response:
+        """Serve the play page at ``/`` when enabled, else the console as before."""
+        if os.environ.get(_PLAY_PAGE_ENV) == "1":
+            return await self._serve_play(request)
+        return await self._serve_browser(request)
+
+    async def _serve_play(self, request: web.Request) -> web.Response:
+        """Return the full-screen play page: model video and game HUD only."""
+        game = os.environ.get(_PLAY_GAME_ENV, "")
+        return self._browser_response(
+            _PLAY_PAGE.replace("</head>", "<script>window.__PLAY_GAME__ = %s;</script></head>" % json.dumps(game), 1)
+        )
+
     async def _serve_browser(self, _: web.Request) -> web.Response:
-        """Return the browser client with its ICE servers injected."""
-        page = _BROWSER_PAGE.replace("</head>", "<script>window.__PAIRED_VIDEO__ = %s;</script></head>" % json.dumps(os.environ.get("FLASHDREAMS_PAIRED_VIDEO") == "1"))
+        """Return the browser client (developer console) with its ICE servers injected."""
+        return self._browser_response(_BROWSER_PAGE)
+
+    def _browser_response(self, base_page: str) -> web.Response:
+        """Inject the paired-video flag and ICE servers into one client page."""
+        page = base_page.replace("</head>", "<script>window.__PAIRED_VIDEO__ = %s;</script></head>" % json.dumps(os.environ.get("FLASHDREAMS_PAIRED_VIDEO") == "1"))
         ice_script = (
             "<script>window.__ICE_SERVERS__ = %s;</script>" % json.dumps(_browser_ice_servers())
         )

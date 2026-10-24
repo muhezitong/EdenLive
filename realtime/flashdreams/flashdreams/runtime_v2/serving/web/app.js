@@ -677,6 +677,9 @@ connect().catch(error => {
 });
 
 (async () => {
+  // The play page shows only the game; the workbench and panel extensions
+  // would take the page over, so it opts out of them.
+  if (window.__NO_EXTENSIONS__) return;
   try {
     const manifest = await (await fetch("/extensions.json", {cache: "no-store"})).json();
     for (const src of manifest.scripts ?? []) {

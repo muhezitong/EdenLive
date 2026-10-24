@@ -16,6 +16,7 @@ import numpy as np
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from functools import cached_property
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -341,6 +342,14 @@ class Game2VModelState:
     produces a different frame count.
     """
 
+    game_scene: str | None = None
+    """``scene`` the rollout is currently anchored on, or ``None`` for the cover.
+
+    A game that publishes ``scene`` in its state (a key-shot id such as
+    ``overhead``) and ships ``<slug>/shots/<scene>/cover.png`` gets its rollout
+    re-anchored on that frame when the scene changes; see :func:`_reanchor_rollout`.
+    """
+
     game_round_id: int | None = None
     """``roundId`` of the game round the rollout is currently generating.
 
@@ -519,7 +528,7 @@ class Game2VModelLoop(IModelLoop[Game2VModelState]):
         # autoregressive index zero, conditioned on a fresh render of the reset
         # round. The chunk just collected is dropped; its frames straddle the
         # reset, so none of it is one round's opening.
-        if _restart_rollout(state):
+        if _restart_rollout(state) or _reanchor_rollout(state):
             ar_index = state.ar_index
             frame_count = int(state.pipeline.get_num_output_frames(ar_index))
             state.cache = state.pipeline.initialize_cache(
@@ -824,6 +833,7 @@ class Game2VModelLoop(IModelLoop[Game2VModelState]):
         state.cache = None
         state.ar_index = 0
         state.game_round_id = None
+        state.game_scene = None
         state.dialog_held = False
         state.blocks_generated = 0
         state.frames_generated = 0
@@ -1394,6 +1404,27 @@ def _anchor_frame(state: Game2VModelState) -> torch.Tensor:
     return frame
 
 
+def _scene_id(chunk: GameChunkPacket | None) -> str | None:
+    """Return the ``scene`` the chunk ends on, or ``None`` if it publishes none."""
+    if chunk is None or not chunk.frames:
+        return None
+    ui_state = chunk.frames[-1].ui_state
+    if not isinstance(ui_state, Mapping):
+        return None
+    scene = ui_state.get("scene")
+    return scene if isinstance(scene, str) and scene else None
+
+
+def _scene_cover_path(slug: str, scene: str):
+    """``<games>/<slug>/shots/<scene>/cover.png`` if the game ships it, else ``None``."""
+    from .game14b import game_cover_path
+
+    if "/" in scene or "\\" in scene or scene.startswith("."):
+        return None
+    path = game_cover_path(slug).parent / "shots" / scene / "cover.png"
+    return path if path.is_file() else None
+
+
 def _round_id(chunk: GameChunkPacket | None) -> int | None:
     """Return the ``roundId`` the chunk ends on, or ``None`` if it publishes none.
 
@@ -1463,6 +1494,7 @@ def _end_rollout(state: Game2VModelState) -> None:
     state.blocks_generated = 0
     state.frames_generated = 0
     state.game_round_id = None
+    state.game_scene = None
     state.last_game_chunk = None
     state.last_generate_wall_s = None
     state.input_timeline.reset(start_s=0.0)
@@ -1643,6 +1675,54 @@ def _publish_browser_metrics(
             state.browser_metrics = snapshot
 
 
+def _reanchor_rollout(state: Game2VModelState) -> bool:
+    """Return whether the collected chunk entered a scene with its own first frame.
+
+    Errors accumulate block by block and the cover stops constraining anything
+    once the camera has moved to a different shot. A game that reports a
+    ``scene`` id and ships a matching first frame gets the rollout rebuilt from
+    that frame, exactly like a round restart but without touching the game:
+    the cache is dropped, the anchor frame is replaced, and generation resumes
+    at autoregressive index zero. A scene without its own frame keeps the
+    current anchor, so games that publish nothing are unaffected.
+
+    Only rank zero renders, so it decides; the answer and the scene id are
+    broadcast because a rank that rebuilt its cache alone would deadlock.
+    """
+    scene = None
+    path = None
+    if state.game_capture is not None:
+        reported = _scene_id(state.last_game_chunk)
+        if reported is not None and reported != state.game_scene:
+            path = _scene_cover_path(state.config.game_slug, reported)
+            if path is not None:
+                scene = reported
+    if is_distributed_initialized():
+        from flashdreams.runtime_v2.distributed_sync import dist
+
+        payload = [(scene, None if path is None else str(path))]
+        dist.broadcast_object_list(payload, src=0)
+        scene, path_text = payload[0]
+        path = None if path_text is None else Path(path_text)
+    if scene is None:
+        return False
+
+    logger.info(
+        "Game2V re-anchor: scene {} -> {}; rebuilding the rollout from {}.",
+        state.game_scene,
+        scene,
+        path,
+    )
+    state.game_scene = scene
+    state.config = replace(
+        state.config,
+        conditioning=replace(state.config.conditioning, first_frame_path=path),
+    )
+    state.anchor_frame = None
+    _rewind_rollout(state)
+    return True
+
+
 def _restart_rollout(state: Game2VModelState) -> bool:
     """Return whether the collected chunk belongs to a round the rollout has not seen.
 
@@ -1678,40 +1758,20 @@ def _restart_rollout(state: Game2VModelState) -> bool:
         "regenerating from the first frame.",
         state.game_round_id,
     )
-    # Nothing rendered ahead can survive: it was simulated for the old round, and
-    # the frame count at index zero differs from the one it was begun with.
-    _discard_pending_game_chunk(state)
-    # Queued condition encodes belong to the old round and are indexed by the
-    # AR steps the new rollout is about to reuse from zero.
-    control_stream = getattr(state, "control_stream", None)
-    if control_stream is not None:
-        control_stream.reset()
-    state.pending_game_frames.clear()
-    # The successor of a chunk that ended on a card was never begun, so a restart
-    # that closed that card must not be read as another pause.
-    state.dialog_held = False
-    state.cache = None
-    # The chunk that straddles the restart is dropped below, and its events
-    # belong to neither round, so the new rollout opens on the static prompt.
-    state.prompt_events.clear()
-    state.active_prompt = ""
-    state.active_event_lines = ()
-    # The rebuilt cache carries the static prompt again, so the next chunk
-    # compares against it rather than against the previous round's text.
-    state.encoded_prompt = ""
-    state.ar_index = 0
-    state.blocks_generated = 0
-    state.frames_generated = 0
-    state.input_timeline.reset(start_s=0.0)
-    state.keyboard_track.reset()
-    state.pose_integrator.reset()
-    state.steady_started_at = None
-    state.steady_frames_generated = 0
-    state.steady_held_s = 0.0
-    state._recent_model_frame_rate_tracker.reset()
-    state.comparison_pending_generated_frames = None
-    if state.postprocess_stream is not None:
-        state.postprocess_stream.reset()
+    if state.game_scene is not None:
+        state.game_scene = None
+        from .game14b import game_cover_path
+
+        # A restart regenerates the round from its opening, which is the cover.
+        state.config = replace(
+            state.config,
+            conditioning=replace(
+                state.config.conditioning,
+                first_frame_path=game_cover_path(state.config.game_slug),
+            ),
+        )
+        state.anchor_frame = None
+    _rewind_rollout(state)
     return True
 
 
@@ -1887,3 +1947,41 @@ __all__ = [
     "CameraControlInput",
     "request_game_switch",
 ]
+
+
+def _rewind_rollout(state: Game2VModelState) -> None:
+    """Drop the rollout cache and everything indexed by it; shared by restart and re-anchor."""
+    # Nothing rendered ahead can survive: it was simulated for the old round, and
+    # the frame count at index zero differs from the one it was begun with.
+    _discard_pending_game_chunk(state)
+    # Queued condition encodes belong to the old round and are indexed by the
+    # AR steps the new rollout is about to reuse from zero.
+    control_stream = getattr(state, "control_stream", None)
+    if control_stream is not None:
+        control_stream.reset()
+    state.pending_game_frames.clear()
+    # The successor of a chunk that ended on a card was never begun, so a restart
+    # that closed that card must not be read as another pause.
+    state.dialog_held = False
+    state.cache = None
+    # The chunk that straddles the restart is dropped below, and its events
+    # belong to neither round, so the new rollout opens on the static prompt.
+    state.prompt_events.clear()
+    state.active_prompt = ""
+    state.active_event_lines = ()
+    # The rebuilt cache carries the static prompt again, so the next chunk
+    # compares against it rather than against the previous round's text.
+    state.encoded_prompt = ""
+    state.ar_index = 0
+    state.blocks_generated = 0
+    state.frames_generated = 0
+    state.input_timeline.reset(start_s=0.0)
+    state.keyboard_track.reset()
+    state.pose_integrator.reset()
+    state.steady_started_at = None
+    state.steady_frames_generated = 0
+    state.steady_held_s = 0.0
+    state._recent_model_frame_rate_tracker.reset()
+    state.comparison_pending_generated_frames = None
+    if state.postprocess_stream is not None:
+        state.postprocess_stream.reset()

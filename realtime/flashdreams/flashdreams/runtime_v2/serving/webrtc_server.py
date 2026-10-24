@@ -138,6 +138,13 @@ def _handle_webrtc_loop_exception(
 
 
 _TURN_HOST_ENV = "FLASHDREAMS_TURN_HOST"
+_TURN_BROWSER_HOST_ENV = "FLASHDREAMS_TURN_BROWSER_HOST"
+"""Optional TURN host handed to the browser when it differs from the server's.
+
+A browser that reaches the relay through a tunnel (``kubectl port-forward`` or
+``ssh -L``) dials ``127.0.0.1`` while the server allocates over the pod IP.
+Unset, the browser gets :data:`_TURN_HOST_ENV` as before.
+"""
 _TURN_PORT_ENV = "FLASHDREAMS_TURN_PORT"
 _TURN_USERNAME_ENV = "FLASHDREAMS_TURN_USERNAME"
 _TURN_CREDENTIAL_ENV = "FLASHDREAMS_TURN_CREDENTIAL"
@@ -184,6 +191,7 @@ def _browser_ice_servers() -> list[dict[str, str]]:
     host = _turn_host()
     if host is None:
         return []
+    host = os.environ.get(_TURN_BROWSER_HOST_ENV) or host
     port = int(os.environ.get(_TURN_PORT_ENV, "3478"))
     return [
         {

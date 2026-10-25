@@ -188,6 +188,45 @@ def test_game_input_payloads_turn_mouse_moves_into_deltas():
         {'action': 'undo', 'phase': 'up'},
     ]
 
+def test_state_line_is_persistent_not_timed():
+    """状态层不按块过期：同一场景的第二块仍带 state 行。"""
+    from eden.apps.game2v.session import _chunk_state_line, _compose_chunk_prompt
+    from eden.apps.game2v.game_timeline import GameChunkPacket, GameFramePacket
+
+    def chunk(state):
+        return GameChunkPacket(
+            chunk_id=0, start_time_s=0.0, end_time_s=1.0, input_sequence_start=0,
+            input_sequence_end=0, simulation_tick_start=0, simulation_tick_end=1,
+            frames=(GameFramePacket(
+                game_frame_id=0, logical_time_s=0, simulation_tick=0, input_sequence=0,
+                game_slug="demo", ui_state=state,
+            ),),
+        )
+
+    ch = chunk({"chapter": 3, "sky": "stable", "card": {"title": "第一百八十四号文明"}, "dehydrated": False})
+    assert _chunk_state_line(ch) == "state: chapter 3, sky stable, card 第一百八十四号文明."
+
+    class S:
+        game_capture = object()
+        config = type("C", (), {})()
+        config.prompt_event_chunks = 1
+        static_prompt = "base."
+        prompt_events = []
+        active_prompt = ""
+        active_event_lines = ()
+        active_state_line = ""
+        encoded_prompt = "base."
+
+    st = S()
+    st.last_game_chunk = chunk({"chapter": 0, "sky": "chaotic", "card": None, "dehydrated": False})
+    _compose_chunk_prompt(st)
+    first = st.active_prompt
+    st.last_game_chunk = chunk({"chapter": 0, "sky": "stable", "card": None, "dehydrated": False})
+    _compose_chunk_prompt(st)
+    assert "state: chapter 0, sky stable." in st.active_prompt
+    assert st.active_prompt != first
+
+
 def test_game_input_payloads_pulse_overlay_actions():
     from numpy import uint64
 

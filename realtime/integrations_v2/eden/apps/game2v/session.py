@@ -1739,6 +1739,16 @@ def _reanchor_rollout(state: Game2VModelState) -> bool:
             path = _scene_cover_path(state.config.game_slug, reported)
             if path is not None:
                 scene = reported
+        # 验证实验（muhezitong/three-body-game#42 L1）：EDEN_REANCHOR_EVERY=<块数> 时，同一场景停留
+        # 满这么多块就用当前锚点帧原样重建一次，测重锚频率与跳变代价。默认关闭。
+        every = int(os.environ.get("EDEN_REANCHOR_EVERY", "0") or 0)
+        if scene is None and every > 0 and state.blocks_generated >= every:
+            current = state.game_scene
+            path = _scene_cover_path(state.config.game_slug, current) if current else None
+            if path is None:
+                from .game14b import game_cover_path
+                path = game_cover_path(state.config.game_slug)
+            scene = current or "cover"
     if is_distributed_initialized():
         from flashdreams.runtime_v2.distributed_sync import dist
 
@@ -1755,7 +1765,7 @@ def _reanchor_rollout(state: Game2VModelState) -> bool:
         scene,
         path,
     )
-    state.game_scene = scene
+    state.game_scene = None if scene == "cover" else scene
     state.config = replace(
         state.config,
         conditioning=replace(state.config.conditioning, first_frame_path=path),

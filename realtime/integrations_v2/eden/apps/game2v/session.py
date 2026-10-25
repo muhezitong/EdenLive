@@ -1054,6 +1054,32 @@ def _drain_live_game_events(state: Game2VModelState) -> list[dict[str, str]]:
     return _game_input_payloads(events)
 
 
+def _chunk_state_line(chunk: GameChunkPacket | None) -> str:
+    """当前关键状态的描述句，每一块都带，直到状态改变（issue #21 的状态层）。
+
+    事件提示只带几块，会把飞船和三颗太阳这类精确状态弄丢；状态层按帧级的
+    chapter / sky / dehydrated / card 生成一句话，每一块都写进提示，不按计时过期。
+    """
+    if chunk is None or not chunk.frames:
+        return ""
+    ui_state = chunk.frames[-1].ui_state
+    if not isinstance(ui_state, Mapping):
+        return ""
+    parts = []
+    chapter = ui_state.get("chapter")
+    if isinstance(chapter, int):
+        parts.append(f"chapter {chapter}")
+    sky = ui_state.get("sky")
+    if isinstance(sky, str) and sky:
+        parts.append(f"sky {sky}")
+    if ui_state.get("dehydrated"):
+        parts.append("dehydrated")
+    card = ui_state.get("card")
+    if isinstance(card, Mapping) and card.get("title"):
+        parts.append(f"card {card['title']}")
+    return "state: " + ", ".join(parts) + "." if parts else ""
+
+
 def _chunk_event_lines(chunk: GameChunkPacket | None) -> list[tuple[str, str]]:
     """Event lines simulated during one chunk, in the order they happened.
 
@@ -1152,6 +1178,13 @@ def _compose_chunk_prompt(state: Game2VModelState) -> tuple[str, tuple[str, ...]
     state.active_prompt = " ".join(part for part in (static, *event_lines) if part)
     state.active_event_lines = event_lines
     _encode_chunk_prompt(state)
+    # 状态层（issue #21）：章节、天空模式、脱水、卡片都不按事件计时，每一块都带上，直到状态改变。
+    state_line = ""
+    if state.game_capture is not None and state.last_game_chunk is not None:
+        state_line = _chunk_state_line(state.last_game_chunk)
+    if state_line:
+        state.active_prompt = f"{state.active_prompt} {state_line}" if state.active_prompt else state_line
+    state.active_state_line = state_line
     return static, event_lines
 
 

@@ -305,6 +305,13 @@ class Game2VModelState:
     drop them when the chunk's frames run out, rather than as a growing history.
     """
 
+    active_state_line: str = ""
+    """State line appended to :attr:`active_prompt` this chunk (issue #21).
+
+    Built from the last frame's chapter, sky, dehydrated flag and card; it never
+    expires, unlike event lines, and is rebuilt every chunk.
+    """
+
     encoded_prompt: str = ""
     """The text currently in the cross-attention cache.
 
@@ -854,6 +861,7 @@ class Game2VModelLoop(IModelLoop[Game2VModelState]):
         state.static_prompt = ""
         state.active_prompt = ""
         state.active_event_lines = ()
+        state.active_state_line = ""
         state.encoded_prompt = ""
         state.prompt_events.clear()
         if state.event_buffer is not None:
@@ -1522,6 +1530,7 @@ def _end_rollout(state: Game2VModelState) -> None:
     state.static_prompt = ""
     state.active_prompt = ""
     state.active_event_lines = ()
+    state.active_state_line = ""
     state.encoded_prompt = ""
     state.ar_index = 0
     state.blocks_generated = 0
@@ -2002,6 +2011,7 @@ def _rewind_rollout(state: Game2VModelState) -> None:
     state.prompt_events.clear()
     state.active_prompt = ""
     state.active_event_lines = ()
+    state.active_state_line = ""
     # The rebuilt cache carries the static prompt again, so the next chunk
     # compares against it rather than against the previous round's text.
     state.encoded_prompt = ""

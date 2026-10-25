@@ -188,6 +188,21 @@ def test_game_input_payloads_turn_mouse_moves_into_deltas():
         {'action': 'undo', 'phase': 'up'},
     ]
 
+def test_model_state_declares_every_prompt_field():
+    """Game2VModelState uses slots, so every attribute the prompt path writes must be a field.
+
+    The state-line test below uses a stand-in class; this one guards the real dataclass,
+    which rejected ``active_state_line`` at runtime before it was declared.
+    """
+    from dataclasses import fields
+
+    from eden.apps.game2v.session import Game2VModelState
+
+    names = {f.name for f in fields(Game2VModelState)}
+    for name in ("active_prompt", "active_event_lines", "active_state_line", "encoded_prompt", "game_scene"):
+        assert name in names, name
+
+
 def test_state_line_is_persistent_not_timed():
     """状态层不按块过期：同一场景的第二块仍带 state 行。"""
     from eden.apps.game2v.session import _chunk_state_line, _compose_chunk_prompt
